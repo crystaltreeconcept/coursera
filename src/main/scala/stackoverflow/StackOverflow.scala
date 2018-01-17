@@ -23,9 +23,9 @@ object StackOverflow extends StackOverflow {
     val grouped = groupedPostings(raw)
     val scored  = scoredPostings(grouped)
     val vectors = vectorPostings(scored)
-//    assert(vectors.count() == 2121822, "Incorrect number of vectors: " + vectors.count())
 
     val means   = kmeans(sampleVectors(vectors), vectors, debug = true)
+
     val results = clusterResults(means, vectors)
     printResults(results)
   }
@@ -42,7 +42,8 @@ class StackOverflow extends Serializable {
       "Objective-C", "Perl", "Scala", "Haskell", "MATLAB", "Clojure", "Groovy")
 
   /** K-means parameter: How "far apart" languages should be for the kmeans algorithm? */
-  def langSpread = 50000
+  //def langSpread = 50000
+  def langSpread = 1
   assert(langSpread > 0, "If langSpread is zero we can't recover the language from the input data!")
 
   /** K-means parameter: Number of clusters */
@@ -126,8 +127,7 @@ class StackOverflow extends Serializable {
       .flatMap { case (q: Question, hs: HighScore) =>
         val lang = firstLangInTag(q.tags, langs)
         if (!lang.isEmpty) Some((lang.get * langSpread, hs)) else None
-      }
-
+      }.cache()
   }
 
 
@@ -303,27 +303,22 @@ class StackOverflow extends Serializable {
     val closestGrouped:RDD[(Int, Iterable[(stackoverflow.LangIndex, stackoverflow.HighScore)])]  = closest.groupByKey()
 
     val median = closestGrouped.mapValues { case vs:Iterable[(stackoverflow.LangIndex, stackoverflow.HighScore)] =>
-      val langIndex = vs.head._1 / langSpread;
+      val vsGrouped:Map[stackoverflow.LangIndex, Iterable[(stackoverflow.LangIndex, stackoverflow.HighScore)]] = vs.groupBy( _._1 )
+      val vsDominant = vsGrouped.maxBy(_._2.size)
+      val langIndex = vsDominant._1 / langSpread
       val langLabel: String   = langs(langIndex) // most common language in the cluster
 
-      val countAndTotal = vs.aggregate[(Int,Int)]((0, 0))(
-
-        (countAndTotal: (Int, Int), entry:(LangIndex, HighScore)) =>
-          (countAndTotal._1 + (if (entry._1 == langIndex) 1 else 0), countAndTotal._2 + 1),
-
-        (countAndTotal1: (Int, Int), countAndTotal2: (Int, Int)) =>
-          (countAndTotal1._1 + countAndTotal2._1, countAndTotal1._2 + countAndTotal2._2)
-
-      )
-      val langPercent: Double = countAndTotal._1 * 100 / countAndTotal._2
+      val langPercent: Double = (vsDominant._2.size.toDouble * 100) / vs.size
 
       val clusterSize: Int    = vs.size
-      //val medianScore: Int    = vs.aggregate[Int](0)( (score, another) => score + another._2, (result1,result2) => result1 + result2) / clusterSize
 
-      val asArray = vs.map(_._2).toArray.sorted
+      val asArray = vsDominant._2.map(_._2).toArray.sorted
       val medianScore: Int    = if (asArray.size % 2 == 1) asArray(asArray.size / 2) else (asArray(asArray.size / 2) + asArray(asArray.size / 2 - 1)) / 2
 
+
       (langLabel, langPercent, clusterSize, medianScore)
+
+
     }
 
     median.collect().map(_._2).sortBy(_._4)
